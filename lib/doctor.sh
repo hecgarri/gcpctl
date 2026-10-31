@@ -27,7 +27,7 @@ doctor::check() {
       failed=1
     fi
   done
-  for cmd in bq fzf gum column; do
+  for cmd in bq fzf gum; do
     if core::has_cmd "$cmd"; then doctor::_line OK "$cmd" "$(command -v "$cmd")"; else doctor::_line AVISO "$cmd" "opcional, no instalado"; fi
   done
   ((failed)) && return "$EX_DEPENDENCY"

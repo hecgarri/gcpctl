@@ -155,13 +155,21 @@ core::filter_quote() {
   printf '"%s"' "${v//\"/\\\"}"
 }
 
-# Imprime un TSV (stdin) alineado en columnas si 'column' está disponible.
+# Alinea en columnas las líneas con tabuladores de stdin; las demás líneas se
+# imprimen tal cual (así las cabeceras de un resumen no ensanchan la tabla).
 core::columns() {
-  if core::has_cmd column; then
-    column -t -s $'\t'
-  else
-    cat
-  fi
+  awk -F'\t' '
+    { line[NR] = $0
+      if (index($0, "\t")) for (i = 1; i <= NF; i++) if (length($i) > w[i]) w[i] = length($i) }
+    END {
+      for (n = 1; n <= NR; n++) {
+        s = line[n]
+        if (!index(s, "\t")) { print s; continue }
+        k = split(s, f, "\t"); out = ""
+        for (i = 1; i < k; i++) out = out sprintf("%-" w[i] "s  ", f[i])
+        print out f[k]
+      }
+    }'
 }
 
 # --- Contexto: proyecto, ubicaciones, formato ----------------------------------
