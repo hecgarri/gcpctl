@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+# gcpctl — CLI modular para administrar proyectos y recursos de Google Cloud.
+#
+# Este archivo es el *dispatcher*: resuelve la ubicación de la instalación,
+# carga el núcleo y los módulos, interpreta las opciones globales y delega en
+# registry::run (modo CLI) o en el menú interactivo (modo TUI).
+
+set -euo pipefail
+
+# --- Localización de la instalación (sigue enlaces simbólicos) ----------------
+_self="$(readlink -f -- "${BASH_SOURCE[0]}")"
+GCPCTL_HOME="${GCPCTL_HOME:-$(cd -- "$(dirname -- "$_self")/.." && pwd)}"
+export GCPCTL_HOME
+unset _self
+
+GCPCTL_VERSION="$(cat "${GCPCTL_HOME}/VERSION" 2>/dev/null || echo "0.0.0-dev")"
+
+# shellcheck source=../lib/core.sh
+source "${GCPCTL_HOME}/lib/core.sh"
+core::check_bash
+# shellcheck source=../lib/registry.sh
+source "${GCPCTL_HOME}/lib/registry.sh"
+
+# Orden de presentación de los módulos; cualquier otro lib/*.sh se carga después.
+GCPCTL_MODULE_ORDER=(projects bigquery composer dataplex compute cloudrun iam logging doctor)
+
+# Carga los módulos de lib/ (sólo definen funciones y metadatos de registro).
+gcpctl::load_modules() {
+  local f name
+  declare -A loaded=()
+  for name in "${GCPCTL_MODULE_ORDER[@]}"; do
+    f="${GCPCTL_HOME}/lib/${name}.sh"
+    [[ -f "$f" ]] || continue
+    # shellcheck source=/dev/null
+    source "$f"
+    loaded[$name]=1
+  done
+  for f in "${GCPCTL_HOME}"/lib/*.sh; do
+    name="${f##*/}"
+    name="${name%.sh}"
+    case "$name" in core | registry) continue ;; esac
+    [[ -n "${loaded[$name]:-}" ]] && continue
+    # shellcheck source=/dev/null
+    source "$f"
+  done
+}
+
+# Ayuda general.
+gcpctl::usage() {
+  cat <<EOF
+gcpctl ${GCPCTL_VERSION} — administración de Google Cloud desde la terminal
+
+Uso:
+  gcpctl                                 Abre el menú interactivo (requiere terminal)
+  gcpctl <módulo> <acción> [args] [opciones]
+  gcpctl help [módulo [acción]]          Ayuda de un módulo o acción
+  gcpctl help --all                      Referencia completa de comandos
+  gcpctl completion bash                 Script de autocompletado para Bash
+
+Módulos:
+$(registry::modules_summary)
+
+Opciones globales (pueden ir en cualquier posición antes de '--'):
+  -p, --project ID      Proyecto a usar (no modifica la configuración de gcloud)
+  -f, --format FMT      Salida: table (por defecto), json, yaml, csv
+      --region REGIÓN   Región (Cloud Run, Dataplex, Composer…)
+      --location LOC    Ubicación (Dataplex, Composer)
+      --zone ZONA       Zona (Compute Engine)
+  -y, --yes             No pedir confirmación (excepto en producción)
+      --dry-run         Muestra los comandos de gcloud/bq sin ejecutarlos
+  -q, --quiet           Menos mensajes informativos
+      --debug           Traza de depuración
+      --no-color        Desactiva colores
+  -h, --help            Muestra esta ayuda
+  -V, --version         Muestra la versión
+
+Variables de entorno: GCPCTL_PROJECT, GCPCTL_FORMAT, GCPCTL_REGION, GCPCTL_ZONE,
+GCPCTL_LOCATION, GCPCTL_PROD_PATTERN (regex de proyectos de producción), NO_COLOR.
+
+Ejemplos:
+  gcpctl projects list
+  gcpctl bigquery tables analytics --project mi-proyecto -f json
+  gcpctl logging errors --service run --freshness 6h
+  gcpctl compute ssh vm-1 --zone europe-west1-b --iap
+EOF
+}
+
+# Referencia completa generada desde el registro.
+gcpctl::help_all() {
+  local m
+  for m in "${REG_MODULES[@]}"; do
+    printf '━━ %s ━━\n' "$m"
+    registry::module_help "$m"
+    printf '\n'
+  done
+}
+
+# Genera un script de autocompletado de Bash a partir del registro.
+gcpctl::completion() {
+  [[ "${1:-bash}" == bash ]] || core::usage_error "Sólo se soporta 'bash'."
+  local m cases="" modules="help completion menu"
+  for m in "${REG_MODULES[@]}"; do
+    modules+=" $m"
+    cases+="    $m) COMPREPLY=(\$(compgen -W \"${REG_ACTIONS[$m]}\" -- \"\$cur\")) ;;"$'\n'
+  done
+  for m in "${!REG_ALIAS[@]}"; do
+    modules+=" $m"
+    cases+="    $m) COMPREPLY=(\$(compgen -W \"${REG_ACTIONS[${REG_ALIAS[$m]}]}\" -- \"\$cur\")) ;;"$'\n'
+  done
+  cat <<EOF
+# Autocompletado de gcpctl. Uso: source <(gcpctl completion bash)
+_gcpctl() {
+  local cur="\${COMP_WORDS[COMP_CWORD]}"
+  if [[ "\$cur" == -* ]]; then
+    COMPREPLY=(\$(compgen -W "--project --format --region --location --zone --yes --dry-run --quiet --debug --no-color --help --version" -- "\$cur"))
+    return
+  fi
+  if ((COMP_CWORD == 1)); then
+    COMPREPLY=(\$(compgen -W "${modules}" -- "\$cur"))
+    return
+  fi
+  ((COMP_CWORD == 2)) || return 0
+  case "\${COMP_WORDS[1]}" in
+${cases}  esac
+}
+complete -F _gcpctl gcpctl
+EOF
+}
+
+# Interpreta las opciones globales. Deja los argumentos restantes en GCPCTL_ARGS.
+gcpctl::parse_globals() {
+  GCPCTL_ARGS=()
+  _WANT_HELP=0 _WANT_VERSION=0
+  local opt val
+  while (($#)); do
+    opt="$1"
+    val=""
+    if [[ "$opt" == --*=* ]]; then
+      val="${opt#*=}"
+      opt="${opt%%=*}"
+    fi
+    case "$opt" in
+      -p | --project | -f | --format | --region | --zone | --location)
+        if [[ -z "$val" ]]; then
+          [[ $# -ge 2 && -n "$2" ]] || core::usage_error "La opción $opt requiere un valor."
+          val="$2"
+          shift
+        fi
+        case "$opt" in
+          -p | --project) GCPCTL_PROJECT="$val" ;;
+          -f | --format) GCPCTL_FORMAT="$val" ;;
+          --region) GCPCTL_REGION="$val" ;;
+          --zone) GCPCTL_ZONE="$val" ;;
+          --location) GCPCTL_LOCATION="$val" ;;
+        esac
+        ;;
+      -y | --yes) GCPCTL_YES=1 ;;
+      --dry-run) GCPCTL_DRY_RUN=1 ;;
+      -q | --quiet) GCPCTL_QUIET=1 ;;
+      --debug) GCPCTL_DEBUG=1 ;;
+      --no-color) GCPCTL_NO_COLOR=1 ;;
+      -h | --help) _WANT_HELP=1 ;;
+      -V | --version) _WANT_VERSION=1 ;;
+      --)
+        GCPCTL_ARGS+=("$@")
+        break
+        ;;
+      *) GCPCTL_ARGS+=("$1") ;;
+    esac
+    shift
+  done
+  if [[ -n "$GCPCTL_PROJECT" ]]; then core::validate_id "proyecto" "$GCPCTL_PROJECT"; fi
+  local v
+  for v in "$GCPCTL_REGION" "$GCPCTL_ZONE" "$GCPCTL_LOCATION"; do
+    if [[ -n "$v" ]]; then core::validate_id "ubicación" "$v"; fi
+  done
+  core::validate_format
+}
+
+# Ayuda contextual: 'help', 'help <módulo>', 'help <módulo> <acción>'.
+gcpctl::help() {
+  if [[ "${1:-}" == --all ]]; then
+    gcpctl::help_all
+    return
+  fi
+  [[ $# -eq 0 ]] && {
+    gcpctl::usage
+    return
+  }
+  local module
+  module="$(registry::resolve_module "$1")" || core::usage_error "Módulo desconocido: '$1'." "Módulos: ${REG_MODULES[*]}"
+  if [[ $# -ge 2 ]]; then
+    registry::has_action "$module" "$2" || core::usage_error "Acción desconocida: '${module} $2'." "Acciones: ${REG_ACTIONS[$module]}"
+    registry::action_help "$module" "$2"
+  else
+    registry::module_help "$module"
+  fi
+}
+
+# Punto de entrada.
+gcpctl::main() {
+  gcpctl::load_modules
+  gcpctl::parse_globals "$@"
+  core::init_colors
+  set -- "${GCPCTL_ARGS[@]}"
+
+  if ((_WANT_VERSION)); then
+    printf 'gcpctl %s\n' "$GCPCTL_VERSION"
+    return 0
+  fi
+
+  if (($# == 0)); then
+    if ((_WANT_HELP)); then
+      gcpctl::usage
+      return 0
+    fi
+    if [[ -t 0 && -t 1 ]]; then
+      set -- menu
+    else
+      gcpctl::usage >&2
+      return "$EX_USAGE"
+    fi
+  fi
+
+  local command_name="$1"
+  shift
+  case "$command_name" in
+    help)
+      gcpctl::help "$@"
+      return
+      ;;
+    version)
+      printf 'gcpctl %s\n' "$GCPCTL_VERSION"
+      return
+      ;;
+    completion)
+      gcpctl::completion "$@"
+      return
+      ;;
+    menu)
+      core::check_deps
+      # shellcheck source=../ui/picker.sh
+      source "${GCPCTL_HOME}/ui/picker.sh"
+      # shellcheck source=../ui/menu.sh
+      source "${GCPCTL_HOME}/ui/menu.sh"
+      menu::main
+      return
+      ;;
+  esac
+
+  local module action
+  module="$(registry::resolve_module "$command_name")" ||
+    core::usage_error "Módulo o comando desconocido: '${command_name}'." "Ejecuta 'gcpctl --help' para ver los módulos."
+
+  if (($# == 0)); then
+    if ((_WANT_HELP)) || [[ -z "${REG_DEFAULT[$module]:-}" ]]; then
+      registry::module_help "$module"
+      ((_WANT_HELP)) && return 0
+      return "$EX_USAGE"
+    fi
+    set -- "${REG_DEFAULT[$module]}"
+  fi
+  action="$1"
+  shift
+  registry::has_action "$module" "$action" ||
+    core::usage_error "Acción desconocida: '${module} ${action}'." "Acciones disponibles: ${REG_ACTIONS[$module]}"
+  if ((_WANT_HELP)); then
+    registry::action_help "$module" "$action"
+    return 0
+  fi
+
+  # shellcheck disable=SC2086  # Lista de dependencias separada por espacios.
+  core::check_deps ${REG_MODULE_DEPS[$module]}
+  registry::run "$module" "$action" "$@"
+}
+
+gcpctl::main "$@"
