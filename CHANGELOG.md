@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0 — 2026-10-31
+
+- Cloud Run jobs: `run jobs`, `job`, `executions`, `execution` y `execute` (escritura).
+- Nuevos módulos: `artifacts` (Artifact Registry), `builds` (Cloud Build),
+  `scheduler` (Cloud Scheduler), `storage` (Cloud Storage), `pubsub` y `secrets`
+  (Secret Manager, sólo metadatos).
+- Nuevos alias de servicio para `logging --service`: scheduler, build, pubsub,
+  artifacts, secrets.
+- Resúmenes alineados sin depender de `column`; descubrimiento de región de
+  Cloud Run sin filtros de gcloud obsoletos.
+
 ## 0.1.0 — 2026-10-31
 
 Primera versión.

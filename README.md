@@ -22,7 +22,9 @@ gcpctl/
 │   ├── core.sh         Logging, errores, dependencias, contexto, ejecución segura de gcloud/bq, confirmaciones
 │   ├── registry.sh     Registro declarativo de módulos y acciones (read / write / interactive)
 │   ├── projects.sh     Módulos 'projects' y 'config'
-│   ├── bigquery.sh     composer.sh  dataplex.sh  compute.sh  cloudrun.sh  iam.sh  logging.sh
+│   ├── bigquery.sh  composer.sh  dataplex.sh  compute.sh  cloudrun.sh (servicios y jobs)
+│   ├── artifacts.sh  builds.sh  scheduler.sh  storage.sh  pubsub.sh  secrets.sh
+│   ├── iam.sh  logging.sh
 │   └── doctor.sh       Diagnóstico de dependencias, cuenta, proyecto y APIs
 ├── ui/
 │   ├── picker.sh       Primitivas de selección/entrada (fzf → gum → read)
@@ -105,7 +107,13 @@ APIs que usa cada módulo (las comprueba `gcpctl doctor`):
 | composer | composer.googleapis.com | `roles/composer.user` (y `environments run` para listar DAGs) |
 | dataplex | dataplex.googleapis.com | `roles/dataplex.dataScanViewer` / `dataScanDataViewer`, `roles/dataplex.catalogViewer` |
 | compute | compute.googleapis.com | `roles/compute.viewer`; para SSH por IAP `roles/iap.tunnelResourceAccessor` |
-| cloudrun | run.googleapis.com | `roles/run.viewer` |
+| cloudrun | run.googleapis.com | `roles/run.viewer`; `execute` requiere `roles/run.invoker`/`run.developer` |
+| artifacts | artifactregistry.googleapis.com | `roles/artifactregistry.reader` |
+| builds | cloudbuild.googleapis.com | `roles/cloudbuild.builds.viewer` |
+| scheduler | cloudscheduler.googleapis.com | `roles/cloudscheduler.viewer` (`run`/`pause`/`resume`: `cloudscheduler.admin`) |
+| storage | storage.googleapis.com | `roles/storage.objectViewer` / `storage.bucketViewer` |
+| pubsub | pubsub.googleapis.com | `roles/pubsub.viewer` |
+| secrets | secretmanager.googleapis.com | `roles/secretmanager.viewer` (sólo metadatos) |
 | iam | iam.googleapis.com | `roles/iam.securityReviewer` |
 | logging | logging.googleapis.com | `roles/logging.viewer` |
 
@@ -173,6 +181,33 @@ gcpctl compute ssh vm-1 --iap                   # IAP automático si no tiene IP
 
 gcpctl run list
 gcpctl run status api --region europe-west1
+gcpctl run jobs                                 # jobs de todas las regiones
+gcpctl run job etl-diario                       # imagen, tareas y última ejecución
+gcpctl run executions etl-diario --limit 5
+gcpctl run execution etl-diario-x7k2p
+gcpctl run execute etl-diario --wait            # escritura: pide confirmación
+
+gcpctl ar repos --location southamerica-west1
+gcpctl ar images mi-repo                        # imágenes Docker con tags
+gcpctl ar packages mi-repo
+gcpctl ar versions mi-repo mi-paquete
+
+gcpctl builds list --ongoing
+gcpctl builds log 1a2b3c4d-...
+gcpctl builds triggers
+
+gcpctl scheduler locations
+gcpctl scheduler list --location southamerica-east1
+gcpctl scheduler run diario --location southamerica-east1   # escritura
+
+gcpctl storage buckets
+gcpctl gcs ls gs://mi-bucket/datos --recursive
+gcpctl gcs du gs://mi-bucket
+
+gcpctl secrets list                             # nunca muestra valores
+gcpctl secrets versions db-url
+gcpctl pubsub topics
+gcpctl pubsub subscriptions eventos
 
 gcpctl iam policy --member user:ana@example.com
 gcpctl iam sa
@@ -217,8 +252,16 @@ Variables de entorno equivalentes: `GCPCTL_PROJECT`, `GCPCTL_FORMAT`,
 `GCPCTL_PICKER=fzf|basic`, `NO_COLOR`.
 
 Resolución de la ubicación: `--location`/`--region` → propiedad de gcloud
-(`composer/location`, `run/region`, `compute/region`, `compute/zone`) → descubrimiento
-por nombre (Compute, Cloud Run) → error con instrucciones.
+(`composer/location`, `artifacts/location`, `run/region`, `compute/region`, `compute/zone`) →
+descubrimiento por nombre (Compute, servicios y jobs de Cloud Run) → error con instrucciones.
+
+Notas:
+- Artifact Registry exige ubicación porque listar en todas puede tardar minutos;
+  usa `artifacts/location` o, en su defecto, `run/region`.
+- Cloud Scheduler no está disponible en todas las regiones (p. ej. sus trabajos
+  pueden estar en `southamerica-east1` aunque el job de Cloud Run esté en
+  `southamerica-west1`): consulta `gcpctl scheduler locations`.
+- Cloud Build y Cloud Storage son globales por defecto.
 
 ---
 
@@ -239,7 +282,13 @@ gcpctl help <módulo> [acción]
 | `composer` (airflow) | `list`, `describe`, `dags` |
 | `dataplex` (catalog) | `scans`, `scan`, `jobs`, `result`, `entry-groups`, `entries`, `search` |
 | `compute` (gce) | `list`, `status`, `start`✎, `stop`✎, `ssh`⇄ |
-| `cloudrun` (run) | `list`, `describe`, `status`, `revisions` |
+| `cloudrun` (run) | `list`, `describe`, `status`, `revisions`, `jobs`, `job`, `executions`, `execution`, `execute`✎ |
+| `artifacts` (ar) | `repos`, `repo`, `images`, `packages`, `versions` |
+| `builds` (cloudbuild, build) | `list`, `describe`, `log`, `triggers` |
+| `scheduler` (cron) | `locations`, `list`, `describe`, `run`✎, `pause`✎, `resume`✎ |
+| `storage` (gcs) | `buckets`, `bucket`, `ls`, `du` |
+| `pubsub` (ps) | `topics`, `subscriptions`, `subscription` |
+| `secrets` (secret) | `list`, `describe`, `versions` (sin acceso a valores) |
 | `iam` | `policy`, `sa`, `sa-keys`, `sa-policy` |
 | `logging` (logs) | `read`, `errors`, `services` |
 | `doctor` | `check` (por defecto) |
@@ -252,7 +301,12 @@ Comandos de gcloud usados (verificados con Google Cloud SDK 590):
 `compute firewall-rules list`, `composer environments list/describe/run … dags list`,
 `dataplex datascans list/describe --view=FULL`, `dataplex datascans jobs list/describe --view=FULL`,
 `dataplex entry-groups list`, `dataplex entries list/search`, `run services list/describe`,
-`run revisions list`, `iam service-accounts list/get-iam-policy`, `iam service-accounts keys list`,
+`run revisions list`, `run jobs list/describe/execute`, `run jobs executions list/describe`,
+`artifacts repositories list/describe`, `artifacts docker images list --include-tags`,
+`artifacts packages|versions list`, `builds list/describe/log`, `builds triggers list`,
+`scheduler locations list`, `scheduler jobs list/describe/run/pause/resume`,
+`storage buckets list/describe`, `storage ls/du`, `pubsub topics|subscriptions list/describe`,
+`secrets list/describe`, `secrets versions list`, `iam service-accounts list/get-iam-policy`, `iam service-accounts keys list`,
 `logging read`, `services list --enabled`; y `bq ls [--datasets|--jobs]`, `bq show`.
 
 ---
