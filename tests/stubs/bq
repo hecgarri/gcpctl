@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Stub de bq para pruebas (ver tests/stubs/gcloud).
+set -euo pipefail
+{
+  printf 'bq'
+  printf ' %q' "$@"
+  printf '\n'
+} >>"${STUB_LOG:-/dev/null}"
+if [[ -n "${STUB_FAIL:-}" ]]; then
+  printf '%s\n' "$STUB_FAIL"
+  exit 2
+fi
+for a in "$@"; do
+  if [[ "$a" == --format=prettyjson ]]; then
+    printf '%s\n' "${STUB_JSON:-[]}"
+    exit 0
+  fi
+done
+printf '%s\n' "${STUB_STDOUT:-stub-output}"

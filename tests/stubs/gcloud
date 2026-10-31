@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Stub de gcloud para pruebas: registra la invocación y devuelve respuestas
+# controladas por variables de entorno. Nunca contacta con Google Cloud.
+#   STUB_LOG            archivo donde se registra cada invocación (citada con %q)
+#   STUB_PROP_<prop>    valor de 'gcloud config get-value <prop>' ('/' -> '_')
+#   STUB_FAIL           texto de error a emitir por stderr (sale con 1)
+#   STUB_JSON           salida para invocaciones con --format=json
+#   STUB_STDOUT         salida para el resto de invocaciones
+set -euo pipefail
+{
+  printf 'gcloud'
+  printf ' %q' "$@"
+  printf '\n'
+} >>"${STUB_LOG:-/dev/null}"
+
+if [[ "${1:-}" == config && "${2:-}" == get-value ]]; then
+  var="STUB_PROP_${3//\//_}"
+  printf '%s\n' "${!var:-}"
+  exit 0
+fi
+if [[ -n "${STUB_FAIL:-}" ]]; then
+  printf '%s\n' "$STUB_FAIL" >&2
+  exit 1
+fi
+for a in "$@"; do
+  if [[ "$a" == --format=json ]]; then
+    printf '%s\n' "${STUB_JSON:-[]}"
+    exit 0
+  fi
+done
+printf '%s\n' "${STUB_STDOUT:-stub-output}"
