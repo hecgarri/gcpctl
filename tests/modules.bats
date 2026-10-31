@@ -220,3 +220,122 @@ setup() { gcpctl_setup; }
   [ "$status" -eq 0 ]
   [[ "$output" == *"2026-01-01 10:00:00  ERROR"*"cloud_run_revision"*"fallo multilínea"* ]]
 }
+
+# --- cloudrun jobs ---
+
+@test "cloudrun jobs lista los jobs de todas las regiones" {
+  run "$GCPCTL" run jobs
+  [ "$status" -eq 0 ]
+  assert_called "gcloud run jobs list --quiet"
+}
+
+@test "cloudrun job descubre la región por nombre exacto" {
+  export STUB_JSON='[{"metadata":{"name":"etl","labels":{"cloud.googleapis.com/location":"southamerica-west1"}},"spec":{"template":{"spec":{"taskCount":1,"template":{"spec":{"containers":[{"image":"img:1"}]}}}}},"status":{"executionCount":3,"latestCreatedExecution":{"name":"etl-abc","completionStatus":"EXECUTION_SUCCEEDED"}}},{"metadata":{"name":"etl-2","labels":{"cloud.googleapis.com/location":"us-central1"}}}]'
+  run "$GCPCTL" -f yaml run job etl
+  [ "$status" -eq 0 ]
+  assert_called "gcloud run jobs describe etl --region=southamerica-west1"
+}
+
+@test "cloudrun execution deduce el job del nombre de la ejecución" {
+  run "$GCPCTL" run execution etl-abc12 --region us-central1
+  [ "$status" -eq 0 ]
+  assert_called "gcloud run jobs executions describe etl-abc12 --region=us-central1"
+}
+
+@test "cloudrun execute es escritura y es asíncrono por defecto" {
+  run "$GCPCTL" run execute etl --region r1 </dev/null
+  [ "$status" -eq 130 ]
+  refute_called "jobs execute"
+  run "$GCPCTL" -y run execute etl --region r1
+  [ "$status" -eq 0 ]
+  assert_called "gcloud run jobs execute etl --region=r1 --async"
+}
+
+# --- artifacts ---
+
+@test "artifacts usa run/region como ubicación de respaldo" {
+  export STUB_PROP_run_region=southamerica-west1
+  run "$GCPCTL" ar repos
+  [ "$status" -eq 0 ]
+  assert_called "gcloud artifacts repositories list --location=southamerica-west1"
+}
+
+@test "artifacts images construye la ruta del repositorio Docker" {
+  run "$GCPCTL" ar images repo1 --location europe-west1 --limit 5
+  [ "$status" -eq 0 ]
+  assert_called "gcloud artifacts docker images list europe-west1-docker.pkg.dev/test-project/repo1 --include-tags"
+  assert_called "--limit=5"
+}
+
+@test "artifacts versions exige repositorio y paquete" {
+  run "$GCPCTL" ar versions repo1 --location l
+  [ "$status" -eq 2 ]
+  run "$GCPCTL" ar versions repo1 pkg --location l
+  [ "$status" -eq 0 ]
+  assert_called "--package=pkg --repository=repo1 --location=l"
+}
+
+# --- builds ---
+
+@test "builds list es global salvo --region" {
+  run "$GCPCTL" builds list --ongoing --limit 3
+  [ "$status" -eq 0 ]
+  assert_called "gcloud builds list --ongoing --limit=3"
+  refute_called "--region"
+  run "$GCPCTL" builds log abc-123 --region europe-west1
+  [ "$status" -eq 0 ]
+  assert_called "gcloud builds log abc-123 --region=europe-west1"
+}
+
+# --- scheduler ---
+
+@test "scheduler run es escritura con ubicación" {
+  run "$GCPCTL" -y scheduler run diario --location southamerica-east1
+  [ "$status" -eq 0 ]
+  assert_called "gcloud scheduler jobs run diario --location=southamerica-east1"
+}
+
+@test "scheduler pause pide confirmación" {
+  run "$GCPCTL" scheduler pause diario --location l </dev/null
+  [ "$status" -eq 130 ]
+  refute_called "jobs pause"
+}
+
+# --- storage ---
+
+@test "storage ls normaliza la URL y usa listado largo" {
+  run "$GCPCTL" storage ls mi-bucket
+  [ "$status" -eq 0 ]
+  assert_called "gcloud storage ls gs://mi-bucket/ --long --readable-sizes"
+  run "$GCPCTL" -f json storage ls gs://mi-bucket/datos --recursive
+  [ "$status" -eq 0 ]
+  assert_called "gcloud storage ls gs://mi-bucket/datos --recursive --json"
+}
+
+@test "storage bucket describe el bucket" {
+  run "$GCPCTL" storage bucket gs://mi-bucket
+  [ "$status" -eq 0 ]
+  assert_called "gcloud storage buckets describe gs://mi-bucket"
+}
+
+# --- secrets / pubsub ---
+
+@test "secrets no expone ninguna acción que lea valores" {
+  run "$GCPCTL" help secrets
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"access"* ]]
+  run "$GCPCTL" secrets access algo
+  [ "$status" -eq 2 ]
+}
+
+@test "secrets versions lista versiones" {
+  run "$GCPCTL" secrets versions db-url
+  [ "$status" -eq 0 ]
+  assert_called "gcloud secrets versions list db-url"
+}
+
+@test "pubsub subscriptions filtra por tema" {
+  run "$GCPCTL" pubsub subscriptions eventos
+  [ "$status" -eq 0 ]
+  assert_called 'topic:\"projects/test-project/topics/eventos\"'
+}
