@@ -1,0 +1,5 @@
+# Configuración de shellcheck para gcpctl.
+shell=bash
+external-sources=true
+source-path=SCRIPTDIR
+source-path=SCRIPTDIR/..

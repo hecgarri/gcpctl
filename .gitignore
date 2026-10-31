@@ -1,0 +1,9 @@
+# Dependencias de pruebas descargadas (make test-deps)
+tests/lib/
+# Artefactos locales
+*.log
+.env
+# Nunca versionar credenciales
+*.json.key
+*credentials*.json
+service-account*.json
