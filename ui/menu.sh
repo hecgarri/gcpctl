@@ -23,7 +23,12 @@ MENU_LAST_SCAN="" # Último DataScan elegido (para elegir sus jobs).
 declare -gA MENU_LOCATION_PROPS=(
   [composer]="composer/location compute/region"
   [dataplex]="compute/region"
+  [artifacts]="artifacts/location run/region compute/region"
+  [scheduler]="compute/region"
 )
+
+MENU_LAST_REPO=""   # Último repositorio de Artifact Registry elegido.
+MENU_LAST_RUNJOB="" # Último job de Cloud Run elegido.
 
 # --- Ejecución -----------------------------------------------------------------
 
@@ -173,6 +178,73 @@ menu::ask_run_service() {
   local region="${MENU_REPLY#*|}"
   [[ -n "$region" ]] && GCPCTL_REGION="$region"
   MENU_REPLY="${MENU_REPLY%%|*}"
+}
+
+menu::ask_run_job() {
+  menu::_json cloudrun jobs || return 1
+  menu::_pick_json "Job" \
+    '.[] | (.metadata.labels["cloud.googleapis.com/location"] // "") as $r | "\(.metadata.name)|\($r)\t\(.metadata.name)  [\($r)]  última: \(.status.latestCreatedExecution.completionStatus // "-")"' || return 1
+  local region="${MENU_REPLY#*|}"
+  [[ -n "$region" ]] && GCPCTL_REGION="$region"
+  MENU_REPLY="${MENU_REPLY%%|*}"
+  MENU_LAST_RUNJOB="$MENU_REPLY"
+}
+
+menu::ask_run_execution() {
+  if [[ -z "$MENU_LAST_RUNJOB" ]]; then
+    core::error "Elige primero un job."
+    return 1
+  fi
+  menu::_json cloudrun executions "$MENU_LAST_RUNJOB" || return 1
+  menu::_pick_json "Ejecución" \
+    '.[] | "\(.metadata.name)\t\(.metadata.creationTimestamp // "")  \(.metadata.name)  ok=\(.status.succeededCount // 0) fallos=\(.status.failedCount // 0)"'
+}
+
+menu::ask_ar_repo() {
+  menu::ensure_location artifacts || return 1
+  menu::_json artifacts repos || return 1
+  menu::_pick_json "Repositorio" '.[] | "\(.name | split("/") | last)\t\(.name | split("/") | last)  [\(.format // "")]  \(.description // "")"' || return 1
+  MENU_LAST_REPO="$MENU_REPLY"
+}
+
+menu::ask_ar_package() {
+  if [[ -z "$MENU_LAST_REPO" ]]; then
+    core::error "Elige primero un repositorio."
+    return 1
+  fi
+  menu::_json artifacts packages "$MENU_LAST_REPO" || return 1
+  menu::_pick_json "Paquete" '.[] | (.name | split("/") | last) as $p | "\($p)\t\($p)  \(.updateTime // "")"'
+}
+
+menu::ask_build() {
+  menu::_json builds list || return 1
+  menu::_pick_json "Compilación" '.[] | "\(.id)\t\(.createTime // "")  [\(.status)]  \(.substitutions.TRIGGER_NAME // "")  \(.id)"'
+}
+
+menu::ask_scheduler_job() {
+  menu::ensure_location scheduler || return 1
+  menu::_json scheduler list || return 1
+  menu::_pick_json "Trabajo" '.[] | "\(.name | split("/") | last)\t\(.name | split("/") | last)  [\(.state // "")]  \(.schedule // "") \(.timeZone // "")"'
+}
+
+menu::ask_bucket() {
+  menu::_json storage buckets || return 1
+  menu::_pick_json "Bucket" '.[] | "\(.name)\t\(.name)  [\(.location // "")]  \(.default_storage_class // "")"'
+}
+
+menu::ask_secret() {
+  menu::_json secrets list || return 1
+  menu::_pick_json "Secreto" '.[] | "\(.name | split("/") | last)\t\(.name | split("/") | last)  creado: \(.createTime // "")"'
+}
+
+menu::ask_pubsub_topic() {
+  menu::_json pubsub topics || return 1
+  menu::_pick_json "Tema" '.[] | "\(.name | split("/") | last)\t\(.name | split("/") | last)"'
+}
+
+menu::ask_pubsub_subscription() {
+  menu::_json pubsub subscriptions || return 1
+  menu::_pick_json "Suscripción" '.[] | "\(.name | split("/") | last)\t\(.name | split("/") | last)  → \(.topic | split("/") | last)"'
 }
 
 menu::ask_service_account() {

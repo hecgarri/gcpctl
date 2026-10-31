@@ -22,7 +22,7 @@ core::check_bash
 source "${GCPCTL_HOME}/lib/registry.sh"
 
 # Orden de presentación de los módulos; cualquier otro lib/*.sh se carga después.
-GCPCTL_MODULE_ORDER=(projects bigquery composer dataplex compute cloudrun iam logging doctor)
+GCPCTL_MODULE_ORDER=(projects bigquery composer dataplex compute cloudrun artifacts builds scheduler storage pubsub secrets iam logging doctor)
 
 # Carga los módulos de lib/ (sólo definen funciones y metadatos de registro).
 gcpctl::load_modules() {
