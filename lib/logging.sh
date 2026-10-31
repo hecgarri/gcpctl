@@ -26,6 +26,11 @@ declare -gA LOGGING_SERVICE_FILTERS=(
   [sql]='resource.type="cloudsql_database"'
   [gcs]='resource.type="gcs_bucket"'
   [iam]='protoPayload.serviceName="iam.googleapis.com"'
+  [scheduler]='resource.type="cloud_scheduler_job"'
+  [build]='resource.type="build"'
+  [pubsub]='(resource.type="pubsub_topic" OR resource.type="pubsub_subscription")'
+  [artifacts]='protoPayload.serviceName="artifactregistry.googleapis.com"'
+  [secrets]='protoPayload.serviceName="secretmanager.googleapis.com"'
 )
 
 # Traduce --service a un filtro: alias conocido, 'xxx.googleapis.com' o resource.type literal.
